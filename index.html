@@ -938,7 +938,7 @@ function hat(t, vel, open) {
 }
 
 /* ---------- composition ---------- */
-const QUAL = { maj7: [0, 4, 7, 11], maj9: [0, 4, 7, 11, 14], m7: [0, 3, 7, 10], m9: [0, 3, 7, 10, 14], m11: [0, 3, 7, 10, 14, 17], d9: [0, 4, 7, 10, 14], d13: [0, 4, 10, 14, 21], sus: [0, 5, 7, 10, 14], b9: [0, 4, 7, 10, 13], six9: [0, 4, 7, 9, 14], hd: [0, 3, 6, 10] };
+const QUAL = { maj7: [0, 4, 7, 11], maj9: [0, 4, 7, 11, 14], m7: [0, 3, 7, 10], m9: [0, 3, 7, 10, 14], m11: [0, 3, 7, 10, 14, 17], d9: [0, 4, 7, 10, 14], d13: [0, 4, 10, 14, 21], sus: [0, 5, 7, 10, 14], b9: [0, 4, 7, 10, 13], six9: [0, 4, 7, 9, 14], hd: [0, 3, 6, 10], dim: [0, 3, 6, 9] };
 const PROGS = [
   [[2, 'm9'], [7, 'd13'], [0, 'maj9'], [9, 'm9']],
   [[5, 'maj9'], [4, 'm7'], [2, 'm9'], [0, 'maj9']],
@@ -996,6 +996,28 @@ function ending(m) {
 }
 
 let trackNo = 0;
+function voiceChord(keyRoot, root, q, center) {
+  const iv = QUAL[q], tones = iv.length >= 4 ? iv.slice(1) : iv.slice();
+  let notes = tones.map(x => { let n = keyRoot + root + x; while (n < center - 7) n += 12; while (n > center + 7) n -= 12; return n; });
+  notes = [...new Set(notes)].sort((a, b) => a - b);
+  for (let k = 1; k < notes.length; k++) if (notes[k] - notes[k - 1] === 1 && notes[k] < 60) notes[k] += 12;
+  notes.sort((a, b) => a - b);
+  let lh = keyRoot + root; while (lh < 43) lh += 12; while (lh > 54) lh -= 12;
+  let bn = keyRoot + root - 24; while (bn < 36) bn += 12; while (bn > 47) bn -= 12;
+  const ct = new Set(iv.filter(x => x < 12).map(x => (keyRoot + root + x) % 12));
+  return { voicing: notes, lh, bn, ct, center: 0.6 * (notes.reduce((a, b) => a + b, 0) / notes.length) + 0.4 * 63 };
+}
+// passing chords at the end of a bar, leading into the target chord of the next bar
+function passingFor(t) {
+  const R = t.root, minor = t.q[0] === 'm' || t.q === 'hd', dom = minor ? 'b9' : pick(['d9', 'd13']);
+  const n = x => ((x % 12) + 12) % 12;
+  if (Math.random() < 0.55) {
+    const [r, q] = pick([[R + 7, dom], [R + 1, 'd9'], [R + 1, t.q], [R - 1, 'dim']]);
+    return [{ at: 12, root: n(r), q }];
+  }
+  const c = pick([[[R + 2, 'm7'], [R + 7, dom]], [[R + 2, t.q], [R + 1, t.q]], [[R + 2, 'd9'], [R + 7, dom]]]);
+  return [{ at: 8, root: n(c[0][0]), q: c[0][1] }, { at: 12, root: n(c[1][0]), q: c[1][1] }];
+}
 function makeSong() {
   const key = pick(KEYS), prog = pick(PROGS), kit = pick(DRUMS);
   const keyRoot = 48 + key.pc;
@@ -1010,18 +1032,18 @@ function makeSong() {
   const bars = []; let prevV = null, center = 64;
   for (const S of sec) for (let i = 0; i < S.n; i++) {
     const ci = bars.length % prog.length, [root, q] = prog[ci];
-    const iv = QUAL[q], tones = iv.length >= 4 ? iv.slice(1) : iv.slice();
-    let notes = tones.map(x => { let n = keyRoot + root + x; while (n < center - 7) n += 12; while (n > center + 7) n -= 12; return n; });
-    notes = [...new Set(notes)].sort((a, b) => a - b);
-    for (let k = 1; k < notes.length; k++) if (notes[k] - notes[k - 1] === 1 && notes[k] < 60) notes[k] += 12;
-    notes.sort((a, b) => a - b);
-    center = 0.6 * (notes.reduce((a, b) => a + b, 0) / notes.length) + 0.4 * 63;
-    let lh = keyRoot + root; while (lh < 43) lh += 12; while (lh > 54) lh -= 12;
-    let bn = keyRoot + root - 24; while (bn < 36) bn += 12; while (bn > 47) bn -= 12;
+    const vc = voiceChord(keyRoot, root, q, center), notes = vc.voicing, { lh, bn } = vc;
+    center = vc.center;
     const f = S.f ? [S.f[0] + (S.f[1] - S.f[0]) * i / S.n, S.f[0] + (S.f[1] - S.f[0]) * (i + 1) / S.n] : [6000, 6000];
-    bars.push({ ci, root, q, voicing: notes, lh, bn, d: S.d, b: S.b, m: S.m, hats: !!S.hats, f, secBar: i, last: i === S.n - 1,
+    bars.push({ ci, root, q, voicing: notes, lh, bn, center, d: S.d, b: S.b, m: S.m, hats: !!S.hats, f, secBar: i, last: i === S.n - 1,
       anticipated: bars.length > 0 && Math.random() < 0.22 && prog[(ci + prog.length - 1) % prog.length] !== prog[ci] });
     prevV = notes;
+  }
+  // even bars (2nd, 4th, ...): 15% chance of one or two passing chords into the next bar
+  for (let i = 1; i < bars.length - 1; i += 2) if (Math.random() < 0.15) {
+    let c = bars[i].center;
+    bars[i].passing = passingFor(bars[i + 1]).map(p => { const v = voiceChord(keyRoot, p.root, p.q, c); c = v.center; return Object.assign(p, v); });
+    bars[i + 1].anticipated = false;
   }
   const pools = prog.map(([root, q]) => {
     const pcs = new Set(PENT.map(p => (key.pc + p) % 12)), ct = new Set();
@@ -1067,10 +1089,15 @@ function scheduleBar(t0) {
   mlp.frequency.linearRampToValueAtTime(bar.f[1], t0 + barDur);
 
   // keys
-  const nextAnt = next && next.anticipated;
-  if (!bar.anticipated) playChord(T(0) + hum(0.01), bar.voicing, bar.lh, barDur * (nextAnt ? 14 / 16 : 1) + 0.08, 0.5);
-  if (!nextAnt && Math.random() < 0.22) playChord(T(10) + hum(0.01), bar.voicing.slice(-3), bar.lh + 12, sd * 4, 0.3);
-  if (nextAnt) playChord(T(14) + hum(0.008), next.voicing, next.lh, barDur + sd * 2 + 0.08, 0.5);
+  const pass = bar.passing, firstPass = pass ? pass[0].at : 16;
+  const nextAnt = !pass && next && next.anticipated;
+  if (!bar.anticipated) playChord(T(0) + hum(0.01), bar.voicing, bar.lh, sd * (pass ? firstPass : nextAnt ? 14 : 16) + 0.08, 0.5);
+  if (!nextAnt && !pass && Math.random() < 0.22) playChord(T(10) + hum(0.01), bar.voicing.slice(-3), bar.lh + 12, sd * 4, 0.3);
+  if (nextAnt) playChord(T(14) + hum(0.008), next.voicing, next.lh, sd * (2 + (next.passing ? next.passing[0].at : 16)) + 0.08, 0.5);
+  if (pass) pass.forEach((p, k) => {
+    const end = k + 1 < pass.length ? pass[k + 1].at : 16;
+    playChord(T(p.at) + hum(0.008), p.voicing, p.lh, (end - p.at) * sd + 0.08, 0.46);
+  });
 
   // drums
   const kit = song.kit;
@@ -1090,15 +1117,16 @@ function scheduleBar(t0) {
 
   // bass
   if (bar.b) {
-    const pos = [0]; for (let s = 1; s < 16; s++) if (song.kit.k[s] === 'x') pos.push(s);
-    const approach = next && next.b && next.bn !== bar.bn && Math.random() < 0.38;
+    const pos = [0]; for (let s = 1; s < firstPass; s++) if (song.kit.k[s] === 'x') pos.push(s);
+    const approach = !pass && next && next.b && next.bn !== bar.bn && Math.random() < 0.38;
     if (approach) while (pos.length && pos[pos.length - 1] >= 13) pos.pop();
     pos.forEach((p, i) => {
-      const end = i + 1 < pos.length ? pos[i + 1] : (approach ? 14 : 16);
+      const end = i + 1 < pos.length ? pos[i + 1] : (approach ? 14 : firstPass);
       const r = Math.random(), m = i === 0 ? bar.bn : r < 0.7 ? bar.bn : r < 0.9 ? bar.bn + 7 : bar.bn + (bar.bn + 12 > 54 ? -5 : 12);
       bassNote(T(p) + hum(0.006), m, (end - p) * sd * 0.92, i === 0 ? 0.95 : 0.8);
     });
     if (approach) bassNote(T(14), next.bn + pick([-1, 1, -2]), sd * 1.8, 0.75);
+    if (pass) pass.forEach((p, k) => bassNote(T(p.at) + hum(0.006), p.bn, ((k + 1 < pass.length ? pass[k + 1].at : 16) - p.at) * sd * 0.92, 0.85));
   }
 
   // melody
@@ -1107,7 +1135,10 @@ function scheduleBar(t0) {
     if (v) {
       const half = bar.secBar % 2;
       for (const e of v) if (e.s >= half * 16 && e.s < half * 16 + 16) {
-        const s = e.s - half * 16, m = melNote(e, bar, s), dur = e.d * sd * 0.92;
+        const s = e.s - half * 16, dur = e.d * sd * 0.92;
+        let m = melNote(e, bar, s);
+        const pc = pass && pass.filter(p => s >= p.at).pop();
+        if (pc) for (const d of [0, 1, -1, 2, -2, 3, -3]) if (pc.ct.has((m + d) % 12)) { m += d; break; }
         if (song.lead === 'ep') ep(T(s) + hum(0.012), m, dur + 0.2, e.v * 0.9, melIn, 0.15);
         else flute(T(s) + hum(0.012), m, dur, e.v, melIn);
       }

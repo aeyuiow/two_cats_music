@@ -100,13 +100,14 @@ input[type=range]:hover::-webkit-slider-thumb{background:var(--accent)}
   <div id="panel" hidden>
     <div class="f"><span>base tempo</span><input id="bpm" type="range" min="62" max="92" step="1"><span class="val" id="bpmv"></span></div>
     <div class="f"><span>vinyl</span><input id="vinyl" type="range" min="0" max="1" step="0.01"><span class="val"></span></div>
+    <div class="f"><span>cats</span><input id="purr" type="range" min="0" max="1" step="0.01"><span class="val"></span></div>
     <div class="f"><span>sky</span><div class="seg" id="sky">
       <button data-v="auto">auto</button><button data-v="sunset">sunset</button><button data-v="dusk">dusk</button><button data-v="night">night</button>
     </div></div>
     <div class="f"><span>layers</span><div class="seg" id="layers">
       <button data-v="keys">keys</button><button data-v="bass">bass</button><button data-v="drums">drums</button><button data-v="melody">melody</button>
     </div></div>
-    <div class="keys">space play · n next · r rain · f fullscreen</div>
+    <div class="keys">space play · n next · r rain · f fullscreen<br>click a cat to say hi · hold to pet</div>
   </div>
 </div>
 
@@ -116,7 +117,7 @@ input[type=range]:hover::-webkit-slider-thumb{background:var(--accent)}
    Settings
    ===================================================================== */
 const ST = Object.assign({
-  vol: 0.75, bpm: 74, vinyl: 0.5, rain: false, sky: 'auto',
+  vol: 0.75, bpm: 74, vinyl: 0.5, purr: 0.6, rain: false, sky: 'auto',
   layers: { keys: true, bass: true, drums: true, melody: true }
 }, (() => { try { return JSON.parse(localStorage.getItem('lofisy') || '{}'); } catch (e) { return {}; } })());
 function save() { try { localStorage.setItem('lofisy', JSON.stringify(ST)); } catch (e) {} }
@@ -706,7 +707,7 @@ function devonBody() {
   s.texture(curls);
   return s.render([RP.devon]);
 }
-function devonHead(eyes) {
+function devonHead(eyes, mouth) {
   const s = new Shape(28, 22), B = 4;
   s.poly([[5, 14], [11, 8], [1.5, 1]], 0, B - 0.2); s.poly([[23, 14], [17, 8], [26.5, 1]], 0, B - 0.2);
   s.ell(14, 14, 7.5, 6, 0, B); s.ell(14, 16, 8.2, 4, 0, B);
@@ -719,7 +720,9 @@ function devonHead(eyes) {
       s.dot(ex, 15, '#6f8aa6'); s.dot(ex + 1, 15, '#151a26'); s.dot(ex + 2, 15, '#6f8aa6');
     }
   } else for (const ex of [9, 17]) for (let i = 0; i < 3; i++) s.dot(ex + i, 15, '#4a4256');
-  s.dot(14, 17, '#d9939a'); s.dot(14, 18, '#6d5f72'); s.dot(13, 19, '#6d5f72'); s.dot(15, 19, '#6d5f72');
+  s.dot(14, 17, '#d9939a'); s.dot(14, 18, '#6d5f72');
+  if (mouth) { s.dot(13, 19, '#4a2230'); s.dot(14, 19, '#4a2230'); s.dot(15, 19, '#4a2230'); s.dot(14, 20, '#c06a78'); }
+  else { s.dot(13, 19, '#6d5f72'); s.dot(15, 19, '#6d5f72'); }
   return s.render([RP.devon, RP.pinkEar], { openBelow: 18 });
 }
 function sphynxBody() {
@@ -737,7 +740,7 @@ function sphynxBody() {
   for (let x = 9; x <= 13; x++) s.adj(x, cy - 4, -0.7);
   return s.render([RP.sphynx]);
 }
-function sphynxHead(eyes) {
+function sphynxHead(eyes, mouth) {
   const s = new Shape(28, 24), B = 4;
   s.poly([[5, 15], [11, 9], [1.5, 2]], 0, B - 1); s.poly([[23, 15], [17, 9], [26.5, 2]], 0, B - 1);
   s.ell(14, 15, 7, 6, 0, B); s.ell(14, 17, 7.6, 4.2, 0, B);
@@ -762,7 +765,9 @@ function sphynxHead(eyes) {
       s.dot(ex, 16, '#e8c44c'); s.dot(ex + 1, 16, '#120d0e'); s.dot(ex + 2, 16, '#d0a83a');
     } else for (let i = 0; i < 3; i++) s.dot(ex + i, 16, '#2a2124');
   }
-  s.dot(14, 18, '#1e1518'); s.dot(14, 19, '#2a1f22'); s.dot(13, 20, '#2a1f22'); s.dot(15, 20, '#2a1f22');
+  s.dot(14, 18, '#1e1518'); s.dot(14, 19, '#2a1f22');
+  if (mouth) { s.dot(13, 20, '#3a1820'); s.dot(14, 20, '#3a1820'); s.dot(15, 20, '#3a1820'); s.dot(14, 21, '#a85a68'); }
+  else { s.dot(13, 20, '#2a1f22'); s.dot(15, 20, '#2a1f22'); }
   return s.render([RP.sphynx, RP.sphEar, RP.sphMask], { openBelow: 20 });
 }
 
@@ -883,6 +888,141 @@ function initAudio() {
     const rhp = BQ('highpass', 220), rlp = BQ('lowpass', 4200);
     rainG = G(ST.rain ? 0.5 : 0);
     src.connect(rhp); rhp.connect(rlp); rlp.connect(rainG); rainG.connect(master); src.start(); }
+}
+
+/* ---------- cat purr ----------
+   Warm noise gated by a 24-30 Hz pulse train (the "rattle"), shaped into exhale/inhale breaths.
+   Goes straight to the master so the music compressor and tape effects don't touch it. */
+let purrBus = null;
+function catBus() { if (!purrBus) { purrBus = G(ST.purr); purrBus.connect(master); } return purrBus; }
+const PURR_VOICE = {
+  sph: { rateE: 24, rateI: 27, lp: 520, pan: 0.1 },
+  devon: { rateE: 27, rateI: 30, lp: 760, pan: -0.25 }
+};
+const purrs = {};
+function purrNodes(id) {
+  if (purrs[id]) return purrs[id];
+  catBus();
+  const V = PURR_VOICE[id];
+  const n = AC.createBufferSource(); n.buffer = noiseBuf; n.loop = true;
+  const lp = BQ('lowpass', V.lp, 0.8), res = BQ('peaking', 280, 2); res.gain.value = 5;
+  const am = G(0), breath = G(0), pan = AC.createStereoPanner(); pan.pan.value = V.pan;
+  // pulse train: a sine pushed through a curve that keeps only sharp positive peaks (0..1)
+  const osc = O('sine', V.rateE), shp = AC.createWaveShaper();
+  { const N = 1024, c = new Float32Array(N); for (let i = 0; i < N; i++) { const x = i / (N - 1) * 2 - 1; c[i] = Math.pow(Math.max(0, x), 3); } shp.curve = c; }
+  const wob = O('sine', 0.7), wobG = G(1.2); wob.connect(wobG); wobG.connect(osc.frequency);
+  osc.connect(shp); shp.connect(am.gain);
+  // a little of the pulse itself as low body
+  const body = BQ('lowpass', 160, 0.7), bhp = BQ('highpass', 40, 0.7), bodyG = G(0.35);
+  shp.connect(body); body.connect(bhp); bhp.connect(bodyG); bodyG.connect(breath);
+  n.connect(lp); lp.connect(res); res.connect(am); am.connect(breath); breath.connect(pan); pan.connect(purrBus);
+  n.start(); osc.start(); wob.start();
+  return (purrs[id] = { V, osc, breath, active: false, next: 0 });
+}
+function purrStart(id) { if (!AC) return; const P = purrNodes(id); if (!P.active) { P.active = true; P.next = Math.max(P.next, AC.currentTime + 0.05); } }
+function purrStop(id) { if (purrs[id]) purrs[id].active = false; }
+function purrHalt(id) {
+  const P = purrs[id]; if (!P) return;
+  P.active = false; const t = AC.currentTime;
+  P.breath.gain.cancelScheduledValues(t); P.breath.gain.setTargetAtTime(0, t, 0.04); P.next = t + 0.2;
+}
+// keep ~1.5 s of breaths scheduled ahead while a cat is purring
+function purrTick() {
+  if (!AC) return;
+  for (const id in purrs) {
+    const P = purrs[id], b = P.breath.gain, f = P.osc.frequency;
+    while (P.active && P.next < AC.currentTime + 1.5) {
+      const t = P.next, E = 1.0 + Math.random() * 0.45, I = 0.7 + Math.random() * 0.3, g1 = 0.1 + Math.random() * 0.08, g2 = 0.18 + Math.random() * 0.15;
+      const lv = 0.85 + Math.random() * 0.3;
+      f.setTargetAtTime(P.V.rateE + Math.random(), t, 0.08); b.setTargetAtTime(1.1 * lv, t, 0.07); b.setTargetAtTime(0, t + E, 0.05);
+      f.setTargetAtTime(P.V.rateI + Math.random(), t + E + g1, 0.06); b.setTargetAtTime(0.62 * lv, t + E + g1, 0.07); b.setTargetAtTime(0, t + E + g1 + I, 0.05);
+      P.next = t + E + g1 + I + g2;
+    }
+  }
+}
+
+/* ---------- cat voices: formant synthesis ----------
+   A glottal-ish sawtooth (+ a little breath noise) through three moving band-pass formants.
+   Curves are [fraction of duration, value] breakpoints. "Mrr" = closed-mouth formants + ~27 Hz rolled-r tremolo. */
+function curveOf(pts, n = 64) {
+  const c = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1); let k = 0;
+    while (k < pts.length - 2 && x > pts[k + 1][0]) k++;
+    const [x0, y0] = pts[k], [x1, y1] = pts[k + 1], u = x1 > x0 ? clamp((x - x0) / (x1 - x0), 0, 1) : 0;
+    c[i] = y0 + (y1 - y0) * u;
+  }
+  return c;
+}
+const CAT_VOICES = {
+  devon: {
+    pan: -0.25,
+    meow: { dur: 0.28, f0: [[0, 640], [0.3, 760], [0.7, 760], [1, 660]], F1: [[0, 320], [0.1, 430], [0.3, 920], [1, 860]], F2: [[0, 1300], [0.12, 1850], [0.3, 1750], [1, 1650]], F3: [[0, 3200], [1, 3500]], amp: [[0, 0], [0.12, 0.55], [0.35, 1], [0.75, 0.75], [1, 0]], noise: 0.14, mouth: true, soft: true, gain: 0.3 },
+    mrr: { dur: 0.6, f0: [[0, 330], [0.5, 325], [1, 318]], F1: [[0, 300], [1, 380]], F2: [[0, 1100], [1, 1200]], F3: [[0, 2800], [1, 2800]], amp: [[0, 0], [0.1, 0.8], [0.85, 0.7], [1, 0]], noise: 0.05, trill: 28 }
+  },
+  sph: {
+    pan: 0.1,
+    meow: { dur: 0.62, f0: [[0, 330], [0.3, 410], [0.6, 390], [0.85, 460], [1, 500]], F1: [[0, 300], [0.12, 450], [0.35, 820], [0.6, 760], [0.85, 450], [1, 400]], F2: [[0, 1200], [0.12, 1750], [0.35, 1550], [0.65, 1350], [0.88, 950], [1, 880]], F3: [[0, 2900], [1, 2900]], amp: [[0, 0], [0.1, 0.5], [0.3, 0.95], [0.6, 1], [0.85, 0.7], [1, 0]], noise: 0.13, mouth: true, soft: true, gain: 0.42 },
+    mrr: { dur: 0.38, f0: [[0, 250], [0.6, 262], [1, 340]], F1: [[0, 300], [1, 400]], F2: [[0, 1000], [1, 1150]], F3: [[0, 2700], [1, 2700]], amp: [[0, 0], [0.1, 1.1], [0.8, 1.1], [1, 0]], noise: 0.05, trill: 26 }
+  }
+};
+// slow random signals for vocal jitter/shimmer: one-pole low-passed noise, normalised to RMS 1
+const _jitBufs = {};
+function jitterBuf(cut) {
+  if (_jitBufs[cut]) return _jitBufs[cut];
+  const sr = AC.sampleRate, len = sr * 2, b = AC.createBuffer(1, len, sr), d = b.getChannelData(0), k = 1 - Math.exp(-2 * Math.PI * cut / sr);
+  let z = 0, e = 0;
+  for (let i = 0; i < len; i++) { z += (Math.random() * 2 - 1 - z) * k; d[i] = z; e += z * z; }
+  const g = 1 / Math.sqrt(e / len); for (let i = 0; i < len; i++) d[i] *= g;
+  return (_jitBufs[cut] = b);
+}
+let _softWave = null;
+function softWave() {
+  if (_softWave) return _softWave;
+  const N = 40, re = new Float32Array(N + 1), im = new Float32Array(N + 1);
+  for (let n = 1; n <= N; n++) im[n] = 1 / (n * n);
+  return (_softWave = AC.createPeriodicWave(re, im));
+}
+function catVoice(t, v, pan) {
+  const ps = 0.96 + Math.random() * 0.08, d = v.dur * (0.92 + Math.random() * 0.16), stop = t + d + 0.1;
+  const src = O('sawtooth', v.f0[0][1] * ps);
+  if (v.soft) src.setPeriodicWave(softWave());
+  src.frequency.setValueCurveAtTime(curveOf(v.f0.map(([x, y]) => [x, y * ps])), t, d);
+  const vib = O('sine', v.soft ? 4.5 : 5.5), vg = G(v.f0[0][1] * ps * (v.soft ? 0.006 : 0.01)); vib.connect(vg); vg.connect(src.frequency);
+  const nz = AC.createBufferSource(); nz.buffer = noiseBuf; const ng = G(v.noise);
+  const mixIn = G(1), shim = G(1); src.connect(shim); shim.connect(mixIn); nz.connect(ng); ng.connect(mixIn);
+  const extra = [];
+  if (v.soft) {
+    // jitter: ~1.2% random pitch wander; shimmer: ~12% random level wander
+    const jn = AC.createBufferSource(), jg = G(v.f0[0][1] * ps * 0.012); jn.buffer = jitterBuf(60); jn.connect(jg); jg.connect(src.frequency);
+    const sn = AC.createBufferSource(), sg = G(0.12); sn.buffer = jitterBuf(110); sn.connect(sg); sg.connect(shim.gain);
+    extra.push([jn, Math.random() * 1.5], [sn, Math.random() * 1.5]);
+  }
+  const am = G(v.trill ? 0.55 : 1); mixIn.connect(am);
+  const nodes = [src, vib, nz];
+  if (v.trill) { const tr = O('sine', v.trill), tg = G(0.45); tr.connect(tg); tg.connect(am.gain); nodes.push(tr); }
+  const sum = G(1);
+  const FQ = v.soft ? [['F1', 3.5, 1], ['F2', 5, 0.45], ['F3', 6, 0.12]] : [['F1', 6, 1], ['F2', 9, 0.55], ['F3', 10, 0.22]];
+  for (const [k, q, g] of FQ) {
+    const bp = BQ('bandpass', v[k][0][1], q), fg = G(g);
+    bp.frequency.setValueCurveAtTime(curveOf(v[k]), t, d);
+    am.connect(bp); bp.connect(fg); fg.connect(sum);
+  }
+  const lp = BQ('lowpass', v.soft ? 3400 : 5200, 0.5), env = G(0), p = AC.createStereoPanner();
+  env.gain.setValueCurveAtTime(curveOf(v.amp.map(([x, y]) => [x, y * (v.gain ?? 0.9)])), t, d);
+  p.pan.value = pan;
+  sum.connect(lp); lp.connect(env); env.connect(p); p.connect(catBus());
+  for (const n of nodes) { n.start(t); n.stop(stop); }
+  for (const [n, off] of extra) { n.start(t, off); n.stop(stop); }
+  src.onended = () => p.disconnect();
+  return d;
+}
+function catSay(id, kind) {
+  if (!AC || !playing) return;
+  const c = cats[id];
+  if (c.doze > 0 || c.purrSleepy) { c.doze = 0; c.purrSleepy = false; purrHalt(id); }
+  const V = CAT_VOICES[id], v = V[kind], d = catVoice(AC.currentTime + 0.06, v, V.pan);
+  if (v.mouth) cats[id].mouth = d + 0.05;
 }
 
 /* ---------- instruments ---------- */
@@ -1723,6 +1863,7 @@ function syncUI() {
   $('rain').setAttribute('aria-pressed', ST.rain);
   $('vol').value = ST.vol; $('bpm').value = ST.bpm; $('bpmv').textContent = ST.bpm; $('vinyl').value = ST.vinyl;
   $('vinyl').nextElementSibling.textContent = Math.round(ST.vinyl * 100);
+  $('purr').value = ST.purr; $('purr').nextElementSibling.textContent = Math.round(ST.purr * 100);
   for (const b of $('sky').children) b.setAttribute('aria-pressed', b.dataset.v === ST.sky);
   for (const b of $('layers').children) b.setAttribute('aria-pressed', !!ST.layers[b.dataset.v]);
 }
@@ -1749,6 +1890,7 @@ $('fs').onclick = fullscreen;
 $('gear').onclick = () => { const p = $('panel'); p.hidden = !p.hidden; $('gear').setAttribute('aria-expanded', !p.hidden); };
 $('vol').oninput = e => { ST.vol = +e.target.value; if (AC) master.gain.setTargetAtTime(ST.vol, AC.currentTime, 0.05); save(); };
 $('bpm').oninput = e => { ST.bpm = +e.target.value; $('bpmv').textContent = ST.bpm; if (AC) dly.delayTime.setTargetAtTime(60 / songBpm(song) * 0.75, AC.currentTime, 0.2); if (song) announce(song); save(); };
+$('purr').oninput = e => { ST.purr = +e.target.value; e.target.nextElementSibling.textContent = Math.round(ST.purr * 100); if (purrBus) purrBus.gain.setTargetAtTime(ST.purr, AC.currentTime, 0.05); save(); };
 $('vinyl').oninput = e => { ST.vinyl = +e.target.value; e.target.nextElementSibling.textContent = Math.round(ST.vinyl * 100); if (AC) vinylG.gain.setTargetAtTime(ST.vinyl * 0.7, AC.currentTime, 0.05); save(); };
 $('sky').onclick = e => { const v = e.target.dataset.v; if (!v) return; ST.sky = v; save(); buildOutside(); syncUI(); };
 $('layers').onclick = e => {
@@ -1796,12 +1938,38 @@ function resize() {
   sc.imageSmoothingEnabled = false;
 }
 addEventListener('resize', resize);
+// which cat (if any) is under a screen point
+function catAt(cx, cy) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), x = (cx * dpr - view.ox) / view.s, y = (cy * dpr - view.oy) / view.s;
+  const D = cats.devon, S = cats.sph;
+  if (x >= S.cx - 21 && x <= S.cx + 20 && y >= S.by - 50 && y <= S.by) return 'sph';
+  if (x >= D.cx - 14 && x <= D.cx + 14 && y >= D.by - 36 && y <= D.by + 1) return 'devon';
+  return null;
+}
+screen.addEventListener('pointermove', e => { screen.style.cursor = catAt(e.clientX, e.clientY) ? 'pointer' : ''; });
+// click a cat: it meows or trills; hold: it closes its eyes and purrs
+let press = null;
+screen.addEventListener('pointerdown', e => {
+  const id = catAt(e.clientX, e.clientY);
+  if (!id) return;
+  press = { id, timer: setTimeout(() => { cats[id].doze = 6 + Math.random() * 3; press = null; }, 550) };
+});
+const release = talk => () => {
+  if (!press) return;
+  clearTimeout(press.timer);
+  if (talk && !(cats[press.id].mouth > 0)) catSay(press.id, Math.random() < 0.6 ? 'meow' : 'mrr');
+  press = null;
+};
+screen.addEventListener('pointerup', release(true));
+screen.addEventListener('pointerleave', release(false));
+screen.addEventListener('pointercancel', release(false));
 
 let roomCv = null;
 const CAT = { devonBody: null, devonOpen: null, devonClosed: null, sphBody: null, sphOpen: null, sphHalf: null, sphClosed: null };
 const cats = {
-  devon: { cx: 126, by: 110, blink: 0, nextBlink: 2, nod: 0 },
-  sph: { cx: 172, by: 148, blink: 0, nextBlink: 3, sleepy: 0, nextSleepy: 14, twitch: 0, nextTwitch: 5 }
+  devon: { cx: 126, by: 110, blink: 0, nextBlink: 2, nod: 0, doze: 0, mouth: 0 },
+  sph: { cx: 172, by: 148, blink: 0, nextBlink: 3, sleepy: 0, nextSleepy: 14, twitch: 0, nextTwitch: 5, doze: 0, purrSleepy: false, mouth: 0 },
+  nextTalk: 120 + Math.random() * 180
 };
 let rainDrops = [], glassDrops = [], ripples = [], steam = [], motes = [], shoot = null, nextShoot = 20;
 let reelA = 0, vu = 0, time = 0, steamT = 0;
@@ -1838,8 +2006,15 @@ function update(dt) {
   const D = cats.devon, S = cats.sph;
   D.nod = Math.max(0, D.nod - dt * 3.5);
   for (const c of [D, S]) { if (time > c.nextBlink) { c.blink = 0.14; c.nextBlink = time + 2.5 + Math.random() * 5; } c.blink = Math.max(0, c.blink - dt); }
-  if (time > S.nextSleepy) { S.sleepy = 4 + Math.random() * 6; S.nextSleepy = time + S.sleepy + 12 + Math.random() * 20; }
+  if (time > S.nextSleepy) { S.sleepy = 4 + Math.random() * 6; S.nextSleepy = time + S.sleepy + 12 + Math.random() * 20; S.purrSleepy = Math.random() < 0.7; }
   S.sleepy = Math.max(0, S.sleepy - dt);
+  D.doze = Math.max(0, D.doze - dt); S.doze = Math.max(0, S.doze - dt);
+  D.mouth = Math.max(0, D.mouth - dt); S.mouth = Math.max(0, S.mouth - dt);
+  // now and then one of the cats speaks up on its own
+  if (playing && time > cats.nextTalk) { cats.nextTalk = time + 120 + Math.random() * 180; catSay(Math.random() < 0.5 ? 'devon' : 'sph', Math.random() < 0.55 ? 'meow' : 'mrr'); }
+  if (D.doze > 0) purrStart('devon'); else purrStop('devon');
+  if (S.doze > 0 || (S.sleepy > 0 && S.purrSleepy)) purrStart('sph'); else purrStop('sph');
+  purrTick();
   if (time > S.nextTwitch) { S.twitch = 0.9; S.nextTwitch = time + 3 + Math.random() * 7; }
   S.twitch = Math.max(0, S.twitch - dt);
   if (playing) reelA += dt * 3.2;
@@ -1940,7 +2115,7 @@ function draw() {
   g.drawImage(CAT.sphBody, S.cx - 18, S.by - 31);
   chain(S.cx + 12, S.by - 6, 0.9, 0, 14, 1.5, i => i < 5 ? 0.45 : i > 10 ? 0.4 * Math.sin(time * 9) * S.twitch : 0, 1, '#736166', '#120c18');
   g.globalAlpha = 1;
-  const sEyes = S.blink > 0 || (S.sleepy > 0 && S.sleepy < 1.2) ? CAT.sphClosed : S.sleepy > 0 ? CAT.sphHalf : CAT.sphOpen;
+  const sEyes = S.mouth > 0 ? CAT.sphMeow : S.blink > 0 || S.doze > 0 || (S.sleepy > 0 && S.sleepy < 1.2) ? CAT.sphClosed : S.sleepy > 0 ? CAT.sphHalf : CAT.sphOpen;
   g.drawImage(sEyes, S.cx - 21, S.by - 50);
 
   // present
@@ -1954,7 +2129,7 @@ function draw() {
   } else sc.drawImage(low, 0, 0, W, H, view.ox, view.oy, W * view.s, H * view.s);
   // Devon's head is drawn at screen resolution so the nod can be half a pixel deep
   const nodOff = D.nod > 0 ? 0.5 * Math.sin(Math.PI * (1 - D.nod)) : 0;
-  sc.drawImage(D.blink > 0 ? CAT.devonClosed : CAT.devonOpen, Math.round(view.ox + (D.cx - 14) * view.s), Math.round(view.oy + (D.by - 35 + nodOff) * view.s), Math.round(28 * view.s), Math.round(22 * view.s));
+  sc.drawImage(D.mouth > 0 ? CAT.devonMeow : D.blink > 0 || D.doze > 0 ? CAT.devonClosed : CAT.devonOpen, Math.round(view.ox + (D.cx - 14) * view.s), Math.round(view.oy + (D.by - 35 + nodOff) * view.s), Math.round(28 * view.s), Math.round(22 * view.s));
 }
 
 let lastT = performance.now(), lastSkyCheck = 0;
@@ -1968,8 +2143,8 @@ function frame(now) {
 /* =====================================================================
    BOOT
    ===================================================================== */
-CAT.devonBody = devonBody(); CAT.devonOpen = devonHead('open'); CAT.devonClosed = devonHead('closed');
-CAT.sphBody = sphynxBody(); CAT.sphOpen = sphynxHead('open'); CAT.sphHalf = sphynxHead('half'); CAT.sphClosed = sphynxHead('closed');
+CAT.devonBody = devonBody(); CAT.devonOpen = devonHead('open'); CAT.devonClosed = devonHead('closed'); CAT.devonMeow = devonHead('open', true);
+CAT.sphBody = sphynxBody(); CAT.sphOpen = sphynxHead('open'); CAT.sphHalf = sphynxHead('half'); CAT.sphClosed = sphynxHead('closed'); CAT.sphMeow = sphynxHead('open', true);
 roomCv = buildRoom();
 buildOutside(); spawnRain();
 resize(); syncUI(); poke();

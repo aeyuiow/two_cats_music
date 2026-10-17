@@ -126,7 +126,7 @@ const ST = Object.assign({
   layers: { keys: true, bass: true, drums: true, melody: true },
   licks: true
 }, (() => { try { return JSON.parse(localStorage.getItem('lofisy') || '{}'); } catch (e) { return {}; } })());
-function save() { try { localStorage.setItem('lofisy', JSON.stringify(ST)); } catch (e) {} }
+function save() { try { localStorage.setItem('lofisy', JSON.stringify(Object.assign({}, ST, { rain: ST.rain && !autoRain }))); } catch (e) {} }
 
 /* =====================================================================
    Pixel helpers
@@ -900,7 +900,8 @@ function initAudio() {
   { const len = sr * 6, b = AC.createBuffer(2, len, sr);
     for (let ch = 0; ch < 2; ch++) {
       const d = b.getChannelData(ch); let z = 0;
-      for (let i = 0; i < len; i++) { z += (Math.random() * 2 - 1 - z) * 0.25; d[i] = z * 0.03; }
+      // hiss 4 dB under the original 0.03 level; the crackle below keeps its level
+      for (let i = 0; i < len; i++) { z += (Math.random() * 2 - 1 - z) * 0.25; d[i] = z * 0.019; }
       for (let k = 0; k < 6 * 13; k++) {
         const pos = Math.floor(Math.random() * (len - 20)), amp = Math.pow(Math.random(), 3) * 0.5 + 0.03, L = 2 + Math.floor(Math.random() * 9), sg = Math.random() < 0.5 ? -1 : 1;
         for (let j = 0; j < L; j++) d[pos + j] += sg * amp * (1 - j / L) * (j % 2 ? -0.6 : 1);
@@ -1978,6 +1979,7 @@ function scheduleBar(t0) {
     const s = song; setTimeout(() => announce(s), Math.max(0, (t0 - AC.currentTime) * 1000));
     dly.delayTime.setTargetAtTime(60 / songBpm(song) * 0.75, t0, 0.3);
     applyChar(song.ch, t0);
+    planRain(t0, song.bars.length * 240 / songBpm(song));
   }
   const bar = song.bars[barIdx], next = song.bars[barIdx + 1], sd = 60 / songBpm(song) / 4, barDur = sd * 16;
   const T = s => t0 + s * sd + (s % 2 ? (song.swing - 0.5) * 2 * sd : 0);
@@ -2076,7 +2078,7 @@ function tick() {
     const gap = scheduleBar(nextBarT) || 0;
     nextBarT += 60 / songBpm(song) * 4 + gap;
   }
-  flushNotes();
+  flushNotes(); weatherTick();
 }
 let ticker = null;
 function startTicker() {
@@ -2118,7 +2120,23 @@ async function togglePlay() {
   $('bigplay').classList.add('gone');
   syncUI(); poke();
 }
-function setRain(on) {
+/* Passing rain: at the start of a track with the rain off there is a 5% chance of a shower somewhere
+   in it, lasting 20-100% of a track (half on average). It stops on its own; rain switched on by
+   hand never does. Times are on the audio clock, so a paused track pauses the weather too. */
+var autoRain = null, rainPlan = null;
+function planRain(t0, len) {
+  if (ST.rain || rainPlan || Math.random() >= 0.05) return;
+  const start = t0 + Math.random() * len;
+  rainPlan = { start, end: start + len * (0.2 + 0.8 * Math.pow(Math.random(), 5 / 3)) };
+}
+function weatherTick() {
+  const now = AC.currentTime;
+  if (rainPlan && now >= rainPlan.start) { const end = rainPlan.end; rainPlan = null; if (!ST.rain) { autoRain = { end }; setRain(true, true); } }
+  if (autoRain && now >= autoRain.end) setRain(false, true);
+}
+function setRain(on, auto = false) {
+  // a press of the button (or R) takes the weather back into the listener's hands
+  if (!auto) { autoRain = null; rainPlan = null; } else if (!on) autoRain = null;
   ST.rain = on; save(); buildOutside(); spawnRain();
   if (AC) rainG.gain.setTargetAtTime(on ? 0.5 : 0, AC.currentTime, 0.8);
   syncUI();

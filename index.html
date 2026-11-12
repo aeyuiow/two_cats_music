@@ -1131,7 +1131,9 @@ function nylon(t, m, dur, vel, dest, pan = 0) {
   const k = ksBuf(m), src = AC.createBufferSource(); src.buffer = k.b; src.playbackRate.value = k.rate;
   const lp = BQ('lowpass', 2600, 0.5), amp = G(0), p = AC.createStereoPanner();
   p.pan.value = pan;
-  amp.gain.setValueAtTime(0.32 * vel, t); amp.gain.setTargetAtTime(0, t + Math.min(dur, 2), 0.08);
+  // a softened pick: ~10 ms fade-in and a filter that opens from 1.6 to 2.6 kHz over the first ~0.1 s
+  amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(0.32 * vel, t + 0.01); amp.gain.setTargetAtTime(0, t + Math.min(dur, 2), 0.08);
+  lp.frequency.setValueAtTime(1600, t); lp.frequency.setTargetAtTime(2600, t + 0.005, 0.035);
   src.connect(lp); lp.connect(amp); amp.connect(p); p.connect(dest);
   src.start(t); src.stop(t + Math.min(dur, 2) + 0.4);
   src.onended = () => p.disconnect();
@@ -1499,9 +1501,10 @@ let trackNo = 0;
 const QUARTAL = { m7: [5, 10, 15, 19], m9: [5, 10, 15, 19], m11: [5, 10, 15, 19], sus: [5, 10, 14, 19], six9: [4, 9, 14, 19], maj9: [4, 9, 14, 19] };
 const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
 // style: close | drop2 | quartal; prevTop: previous top note for smooth top-voice leading
-function voiceChord(keyRoot, root, q, center, style = 'close', prevTop = null) {
+// hold = keep prevTop as the top note whenever some voicing allows it
+function voiceChord(keyRoot, root, q, center, style = 'close', prevTop = null, hold = false) {
   const iv = QUAL[q], base = keyRoot + root;
-  const score = c => Math.abs(avg(c) - center) + (prevTop != null ? 0.7 * Math.abs(c[c.length - 1] - prevTop) - (c[c.length - 1] === prevTop ? 0.5 : 0) : 0);
+  const score = c => Math.abs(avg(c) - center) + (prevTop != null ? 0.7 * Math.abs(c[c.length - 1] - prevTop) - (c[c.length - 1] === prevTop ? (hold ? 20 : 0.5) : 0) : 0);
   let notes = null, best = Infinity;
   if (style === 'quartal' && QUARTAL[q]) {
     for (let k = -3; k <= 3; k++) {
@@ -1611,6 +1614,115 @@ function applyChar(c, t) {
   set(FX.klp.frequency, c.keys);
   set(FX.verbOut.gain, c.wet); setVerbMix(c.hall, t);
 }
+/* ---------- borrowed colour chord ----------
+   In a quarter of the tracks one slot of the verse or chorus progression is recoloured with a chord
+   from outside the mode, each time that part comes round again: on the 2nd pass of its 8-bar
+   sections (with a slow harmonic rhythm: in its last 8-bar section). Candidates are the Tonnetz
+   neighbours lofi likes (iv, bVI, bVII9, bIII, bII ...), never one the progression already has.
+   One is taken only if its triad shares a tone with the chords on both sides and reaches them by
+   small steps (or moves to them by at most 3 semitones in all), so the surprise stays smooth.
+   ?borrow=0|1 in the URL forces it off/on (for auditioning). */
+const BORROW_FORCE = (() => { const v = new URLSearchParams(location.search).get('borrow'); return v == null ? null : v === '1'; })();
+// [degree, quality, weight, role]: the colour chord takes the place of a chord of the same function -
+// S = a subdominant-side chord, T = a tonic-side chord inside the phrase (not its first chord),
+// D = the chord right before the tonic (backdoor); a dominant that resolves home is never replaced
+const BORROW = {
+  major: [[5, 'm9', 3, 'S'], [8, 'maj9', 3, 'S'], [10, 'd9', 2, 'D'], [3, 'maj9', 2, 'T'], [1, 'maj9', 1, 'D'], [0, 'm9', 1, 'T']],
+  minor: [[1, 'maj9', 3, 'S'], [5, 'd9', 2, 'S'], [10, 'maj9', 1, 'S']],
+  dorian: [[1, 'maj9', 2, 'S'], [8, 'maj9', 3, 'S'], [5, 'm9', 2, 'S']],
+  mixolydian: [[5, 'm9', 3, 'S'], [8, 'maj9', 2, 'S'], [3, 'maj9', 2, 'T']]
+};
+// function of a progression chord: from the mode's vocabulary, else by its degree
+function fnOfChord(M, [r, q]) {
+  const f = ['T', 'S', 'D'].find(k => M[k].some(c => c[0] === r && c[1] === q));
+  return f || ([0, 3, 4, 9].includes(r) ? 'T' : [2, 5, 8].includes(r) ? 'S' : 'D');
+}
+const DEG_N = ['I', '♭II', 'II', '♭III', 'III', 'IV', '♯IV', 'V', '♭VI', 'VI', '♭VII', 'VII'];
+const triadOf = ([r, q]) => { const iv = QUAL[q]; return [0, iv[1], iv.includes(7) ? 7 : iv.includes(6) ? 6 : 7].map(x => (r + x) % 12); };
+const VL_PERMS = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+// smallest total motion (in semitones) taking one triad to the other
+function vlDist(a, b) {
+  let best = 99;
+  for (const pm of VL_PERMS) { let t = 0; for (let k = 0; k < 3; k++) { const d = Math.abs(a[k] - b[pm[k]]) % 12; t += Math.min(d, 12 - d); } best = Math.min(best, t); }
+  return best;
+}
+function smoothTo(x, y) { const a = triadOf(x), b = triadOf(y), v = vlDist(a, b); return (a.some(n => b.includes(n)) && v <= 5) || v <= 3; }
+function planBorrow(mode, progA, progB, rhythm) {
+  if (BORROW_FORCE === false || rhythm === 'fast' || !(BORROW_FORCE || Math.random() < 0.25)) return null;
+  const opts = [];
+  for (const [p, part] of [[progB, 'chorus'], [progA, 'verse']]) {
+    if (part === 'verse' && p === progB) continue;
+    const L = p.length;
+    for (let ci = 0; ci < L - 1; ci++) {
+      const prev = p[(ci + L - 1) % L], cur = p[ci], next = p[ci + 1];
+      const fn = fnOfChord(MODES[mode], cur), same = (x, y) => x.every(n => y.includes(n));
+      if (fn === 'D' && next[0] === 0 && cur[0] === 7) continue;
+      for (const [r, q, w, role] of BORROW[mode]) {
+        if (p.some(c => c[0] === r && c[1] === q) || same(triadOf(cur), triadOf([r, q]))) continue;
+        if (role === 'D' ? next[0] !== 0 || cur[0] === 0 : role !== fn || (role === 'T' && ci === 0)) continue;
+        if (role === 'D' ? !smoothTo(prev, [r, q]) : !smoothTo(prev, [r, q]) || !smoothTo([r, q], next)) continue;
+        opts.push({ p, part, ci, root: r, q, from: cur, w: w * (part === 'chorus' ? 1.5 : 1) });
+      }
+    }
+  }
+  if (!opts.length) return null;
+  let x = Math.random() * opts.reduce((a, o) => a + o.w, 0);
+  for (const o of opts) { x -= o.w; if (x <= 0) return o; }
+  return opts[opts.length - 1];
+}
+/* ---------- mediant shift ----------
+   Instead of the whole-step lift, the last chorus can move a third away: down a major third (to bVI,
+   warm), up a minor third (to bIII, wistful) or up a major third (to III, bright) - a chromatic
+   mediant, two steps on the Tonnetz. No pivot dominant: the chord before the shift shares a tone with
+   the first chord after it, and the keys keep that tone on top across the seam. The outro comes home
+   the same way. A shift is only taken when both seams are smooth (see smoothTo).
+   ?shift=0|1 in the URL forces it off/on (for auditioning). */
+const SHIFT_FORCE = (() => { const v = new URLSearchParams(location.search).get('shift'); return v == null ? null : v === '1'; })();
+const SHIFTS = { '-4': { w: 3, label: 'down a major 3rd' }, '3': { w: 2, label: 'up a minor 3rd' }, '4': { w: 1, label: 'up a major 3rd' } };
+const pcMod = x => ((x % 12) + 12) % 12;
+function planShift(progA, progB) {
+  const into = progA[progA.length - 1], first = progB[0], last = progB[progB.length - 1], home = progA[0], ok = {};
+  for (const d in SHIFTS) {
+    const dd = +d, f = [pcMod(first[0] + dd), first[1]], l = [pcMod(last[0] + dd), last[1]];
+    if (smoothTo(into, f) && smoothTo(l, home)) ok[d] = SHIFTS[d].w;
+  }
+  return Object.keys(ok).length ? +wpick(ok) : 0;
+}
+/* ---------- "halo" breakdown ----------
+   Four bars of keys and bass (no drums, no melody) turning around one held note: the 3rd or the 5th of
+   the key stays on top of the keys while the chords under it change - on the Tonnetz, triangles around
+   one node. Three chords from the mode and one chromatic chord in the middle (e.g. A major under the E
+   in C), every step smooth (smoothTo), entering from the chorus's last chord and leading into the verse.
+   No chord may put a tone a semitone from the held note. ?halo=0|1 in the URL forces it off/on. */
+const HALO_FORCE = (() => { const v = new URLSearchParams(location.search).get('halo'); return v == null ? null : v === '1'; })();
+const MODE_SCALE = { major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], dorian: [0, 2, 3, 5, 7, 9, 10], mixolydian: [0, 2, 4, 5, 7, 9, 10] };
+const HALO_Q = ['maj9', 'six9', 'maj7', 'm9', 'm7', 'm11', 'd9', 'sus'];
+// the tones a keys voicing plays (rootless when the chord has four or more)
+const voicedPcs = ([r, q]) => { const iv = QUAL[q]; return (iv.length >= 4 ? iv.slice(1) : iv).map(x => (r + x) % 12); };
+function planHalo(mode, progA, progB) {
+  const sc = MODE_SCALE[mode], third = MODES[mode].pent.includes(4) ? 4 : 3;
+  const into = progB[progB.length - 1], out = progA[0], triKey = c => triadOf(c).slice().sort((a, b) => a - b).join();
+  for (const node of Math.random() < 0.5 ? [third, 7] : [7, third]) {
+    const D = [], X = [];
+    for (let r = 0; r < 12; r++) for (const q of HALO_Q) {
+      const c = [r, q], all = QUAL[q].map(x => (r + x) % 12);
+      if (!voicedPcs(c).includes(node) || all.some(x => pcMod(x - node) === 1 || pcMod(node - x) === 1)) continue;
+      (QUAL[q].filter(x => x < 12).every(x => sc.includes((r + x) % 12)) ? D : X).push(c);
+    }
+    if (D.length < 3 || !X.length) continue;
+    const ok = [];
+    for (let k = 0; k < 400; k++) {
+      const at = Math.random() < 0.5 ? 1 : 2, path = [0, 1, 2, 3].map(j => pick(j === at ? X : D));
+      // four different roots (it should turn, not re-colour one chord), at most one sus
+      if (new Set(path.map(c => c[0])).size < 4 || path.filter(c => c[1] === 'sus').length > 1) continue;
+      const seq = [into, ...path, out];
+      if (!seq.every((c, j) => !j || smoothTo(seq[j - 1], c))) continue;
+      ok.push({ path, node, cost: seq.reduce((a, c, j) => j ? a + vlDist(triadOf(seq[j - 1]), triadOf(c)) : 0, 0) });
+    }
+    if (ok.length) { const min = Math.min(...ok.map(o => o.cost)); return pick(ok.filter(o => o.cost <= min + 2)); }
+  }
+  return null;
+}
 function makeSong() {
   const ch = makeChar(), CUT = ch.cut;
   const harm = pickHarm();
@@ -1620,21 +1732,27 @@ function makeSong() {
   let progA = mode === 'major' && Math.random() < 0.4 ? pick(PROGS) : genProg(M);
   if (!progA) progA = pick(PROGS);
   let progB = genProg(M, 'S', progA) || genProg(M, null, progA) || progA;
-  const tapeStopEnd = Math.random() < 0.17, modUp = Math.random() < 0.14 ? 2 : 0;
+  const tapeStopEnd = Math.random() < 0.17;
+  // last chorus: a whole-step lift (14%) or a mediant shift (12%, returning home in the outro)
+  let modUp = SHIFT_FORCE ? 0 : Math.random() < 0.14 ? 2 : 0, shift = 0;
+  if (!modUp && SHIFT_FORCE !== false && (SHIFT_FORCE || Math.random() < 0.12 / 0.86)) shift = planShift(progA, progB);
   const sec = [];
   sec.push({ n: 4, d: 0, b: 0, m: 0, p: progA, f: [700, CUT], hats: Math.random() < 0.45 });
   sec.push({ n: 8, d: 1, b: 1, m: 0, p: progA });
   sec.push({ n: 8, d: 1, b: 1, m: 1, p: progB });
-  // breakdown: filtered (no drums), bare (keys only) or beat (drums + bass only)
-  if (Math.random() < 0.6) {
-    const bt = wpick({ filtered: 0.45, bare: 0.3, beat: 0.25 }), lowF = Math.min(2400, CUT);
-    if (bt === 'filtered') sec.push({ n: 4, d: 0, b: 1, m: 1, p: progA, f: [lowF, lowF], brk: bt });
+  // breakdown: filtered (no drums), bare (keys only), beat (drums + bass only) or halo (chords around a held note)
+  if (HALO_FORCE || Math.random() < 0.6) {
+    let bt = HALO_FORCE ? 'halo' : wpick(HALO_FORCE === false ? { filtered: 0.45, bare: 0.3, beat: 0.25 } : { filtered: 0.35, bare: 0.2, beat: 0.2, halo: 0.25 }), lowF = Math.min(2400, CUT);
+    const halo = bt === 'halo' ? planHalo(mode, progA, progB) : null;
+    if (bt === 'halo' && !halo) bt = 'bare';
+    if (halo) sec.push({ n: 4, d: 0, b: 1, m: 0, p: halo.path, halo, f: [CUT * 0.85, CUT * 0.85], brk: bt });
+    else if (bt === 'filtered') sec.push({ n: 4, d: 0, b: 1, m: 1, p: progA, f: [lowF, lowF], brk: bt });
     else if (bt === 'bare') sec.push({ n: 4, d: 0, b: 0, m: 0, p: progA, f: [CUT * 0.75, CUT * 0.75], brk: bt });
     else sec.push({ n: 4, d: 1, b: 1, m: 0, k: 0, p: progA, brk: bt });
   }
   sec.push({ n: 8, d: 1, b: 1, m: Math.random() < 0.5 ? 1 : 0, p: progA });
   // last chorus (and the outro) can lift a whole step
-  sec.push({ n: 8, d: 1, b: 1, m: 1, p: progB, mod: modUp });
+  sec.push({ n: 8, d: 1, b: 1, m: 1, p: progB, mod: modUp || shift });
   sec.push({ n: 4, d: 0, b: 0, m: 0, p: progA, mod: modUp, f: tapeStopEnd ? [CUT, Math.max(1800, CUT * 0.5)] : [CUT, 700] });
   // verse groove = main pattern; chorus = a variation of it or another pattern from the same family
   const kitB = Math.random() < 0.5 ? variantOf(kit) : variantOf(pick(lib.filter(x => x !== kit)));
@@ -1644,18 +1762,41 @@ function makeSong() {
   const bassA = wpick(BASS_STYLES), bassB = Math.random() < 0.6 ? bassA : pick(Object.keys(BASS_STYLES).filter(x => x !== bassA));
   // harmonic rhythm, voicing style and pedal bass for this track
   const rhythm = wpick({ one: 0.6, slow: 0.2, fast: 0.2 }), vstyle = wpick({ close: 0.5, drop2: 0.25, quartal: 0.25 }), pedal = Math.random() < 0.15;
+  const borrow = planBorrow(mode, progA, progB, rhythm);
+  // with a slow harmonic rhythm a pass takes the whole section: recolour only the part's last 8-bar section
+  const borrowSec = borrow && rhythm === 'slow' ? sec.map((S, si) => S.p === borrow.p && S.n === 8 ? si : -1).filter(si => si >= 0).pop() : -1;
   const bars = []; let center = 64, top = null;
-  const voice = (kr, r, qq) => { const v = voiceChord(kr, r, qq, center, vstyle, top); center = v.center; top = v.top; return v; };
+  const voice = (kr, r, qq, hold) => { const v = voiceChord(kr, r, qq, center, vstyle, top, hold); center = v.center; top = v.top; return v; };
   sec.forEach((S, si) => { for (let i = 0; i < S.n; i++) {
     const L = S.p.length, mod = S.mod || 0, kr = keyRoot + mod;
-    const ci = rhythm === 'slow' ? Math.floor(i / 2) % L : rhythm === 'fast' ? (2 * i) % L : i % L;
-    const repeat = rhythm === 'slow' ? i >= 2 * L : rhythm === 'fast' ? 2 * i >= L : i >= L;
+    // a halo section always moves one chord per bar
+    const ci = S.halo ? i % L : rhythm === 'slow' ? Math.floor(i / 2) % L : rhythm === 'fast' ? (2 * i) % L : i % L;
+    const repeat = S.halo ? false : rhythm === 'slow' ? i >= 2 * L : rhythm === 'fast' ? 2 * i >= L : i >= L;
     let [root, q] = S.p[ci];
     if (repeat && Math.random() < 0.3) q = varyQ(q);
-    const vc = voice(kr, root, q), notes = vc.voicing, { lh, bn } = vc;
+    const borrowed = !!borrow && S.p === borrow.p && ci === borrow.ci && S.n === 8 && (rhythm === 'slow' ? si === borrowSec : repeat);
+    if (borrowed) { root = borrow.root; q = borrow.q; }
+    // across a mediant shift (either way) a tone both chords voice is put on top of both
+    let hold = false;
+    if (shift && i === 0 && bars.length && mod !== bars[bars.length - 1].mod) {
+      const pb = bars[bars.length - 1], pc = pb.passing ? pb.passing[pb.passing.length - 1] : pb;
+      const tonesOf = (k, r, qq) => { const iv = QUAL[qq]; return (iv.length >= 4 ? iv.slice(1) : iv).map(x => (k + r + x) % 12); };
+      const nowT = tonesOf(kr, root, q), common = tonesOf(pb.kr, pc.root, pc.q).filter(x => nowT.includes(x));
+      if (common.length) {
+        const near = c => { const dn = pcMod(pc.top - c); return dn <= 6 ? pc.top - dn : pc.top + 12 - dn; };
+        const tgt = common.map(near).sort((x, y) => Math.abs(x - pc.top) - Math.abs(y - pc.top))[0];
+        const pv = voiceChord(pb.kr, pc.root, pc.q, pc.center, vstyle, tgt, true);
+        if (pv.top === tgt) { pc.voicing = pv.voicing; pc.top = tgt; top = tgt; hold = true; }
+      }
+    }
+    // halo: the held note sits on top of every chord (in 67..78)
+    // (close voicing there: quartal shapes cannot be asked for a given top note)
+    if (S.halo) { const pc = (kr + S.halo.node) % 12; top = 67 + pcMod(pc - 67); hold = true; }
+    const vc = S.halo ? (v => { center = v.center; top = v.top; return v; })(voiceChord(kr, root, q, center, 'close', top, true)) : voice(kr, root, q, hold), notes = vc.voicing, { lh, bn } = vc;
     // second chord in the bar: fast harmonic rhythm, or a sus chord resolving to its dominant
     let split = null;
-    if (rhythm === 'fast') {
+    if (S.halo) split = null;
+    else if (rhythm === 'fast') {
       let [r2, q2] = S.p[(2 * i + 1) % L]; if (repeat && Math.random() < 0.3) q2 = varyQ(q2);
       split = [Object.assign({ at: 8, root: r2, q: q2 }, voice(kr, r2, q2))];
     } else if (q === 'sus' && Math.random() < 0.4) split = [Object.assign({ at: 8, root, q: 'd9' }, voice(kr, root, 'd9'))];
@@ -1665,19 +1806,22 @@ function makeSong() {
     let fill = null;
     if (S.d && i === S.n - 1 && nextSec) fill = pick(FILLS);
     else if (S.d && S.n === 8 && i === 3 && Math.random() < 0.35) fill = pick(MINI_FILLS);
-    bars.push({ kit: S.p === progB && S.p !== progA ? kitB : kit, comp: S.p === progB && S.p !== progA ? compB : compA, bass: S.p === progB && S.p !== progA ? bassB : bassA, fill, dropKick: S.d && !fill && i > 0 && Math.random() < 0.06,
+    // halo: block chords (so the held note is struck together with each chord) over a sustained bass
+    bars.push({ kit: S.p === progB && S.p !== progA ? kitB : kit, comp: S.halo ? 'block' : S.p === progB && S.p !== progA ? compB : compA, bass: S.halo ? 'sustain' : S.p === progB && S.p !== progA ? bassB : bassA, fill, halo: !!S.halo, dropKick: S.d && !fill && i > 0 && Math.random() < 0.06,
       root, q, kr, mod, k: S.k ?? 1, voicing: notes, lh, bn, rbn: bn, center, top, passing: split, pedal: pedal && si === 1, d: S.d, b: S.b, m: S.m, hats: !!S.hats, f, secBar: i, sec: si, last: i === S.n - 1,
-      anticipated: !!prev && Math.random() < 0.22 && (prev.root !== root || prev.q !== q) });
+      borrowed, anticipated: !S.halo && !(prev && prev.halo) && !!prev && Math.random() < 0.22 && (prev.root !== root || prev.q !== q) });
   } });
   // even bars (2nd, 4th, ...): 15% chance of one or two passing chords into the next bar
-  for (let i = 1; i < bars.length - 1; i += 2) if (!bars[i].passing && Math.random() < 0.15) {
+  for (let i = 1; i < bars.length - 1; i += 2) if (!bars[i].passing && !bars[i].borrowed && !bars[i].halo && !bars[i + 1].halo && bars[i + 1].mod === bars[i].mod && Math.random() < 0.15) {
     let c = bars[i].center, tp = bars[i].top;
     bars[i].passing = passingFor(bars[i + 1]).map(p => { const v = voiceChord(bars[i + 1].kr, p.root, p.q, c, vstyle, tp); c = v.center; tp = v.top; return Object.assign(p, v); });
     bars[i + 1].anticipated = false;
   }
   // pivot into the modulation: dominant of the new key on beat 4 of the bar before
   const mi = bars.findIndex(b => b.mod);
-  if (mi > 0) {
+  // a mediant shift goes straight across on its common tone, both into the chorus and back home
+  if (shift) bars.forEach((b, i) => { if (i && b.mod !== bars[i - 1].mod) b.anticipated = false; });
+  else if (mi > 0) {
     const t = bars[mi], dom = t.q[0] === 'm' || t.q === 'hd' ? 'b9' : 'd13', r = (t.root + 7) % 12;
     bars[mi - 1].passing = (bars[mi - 1].passing || []).filter(p => p.at < 12).concat([Object.assign({ at: 12, root: r, q: dom }, voiceChord(t.kr, r, dom, bars[mi - 1].center, vstyle, bars[mi - 1].top))]);
     t.anticipated = false;
@@ -1698,10 +1842,12 @@ function makeSong() {
   // melody note pools per chord: mode pentatonic + chord tones
   const poolCache = {};
   for (const bar of bars) {
-    const id = bar.root + bar.q + '/' + bar.mod, kpc = (key.pc + bar.mod) % 12;
+    const id = bar.root + bar.q + '/' + bar.mod + (bar.borrowed ? 'b' : ''), kpc = pcMod(key.pc + bar.mod);
     if (!poolCache[id]) {
-      const pcs = new Set(M.pent.map(p => (kpc + p) % 12)), ct = new Set();
-      for (const x of QUAL[bar.q]) { const pc = (kpc + bar.root + x) % 12; pcs.add(pc); if (x < 12) ct.add(pc); }
+      const pcs = new Set(M.pent.map(p => (kpc + p) % 12)), ct = new Set(), ext = new Set();
+      for (const x of QUAL[bar.q]) { const pc = (kpc + bar.root + x) % 12; pcs.add(pc); (x < 12 ? ct : ext).add(pc); }
+      // over a borrowed chord the mode's pentatonic would rub: keep only notes clear of its chord tones
+      if (bar.borrowed) for (const pc of [...pcs]) if (!ct.has(pc) && !ext.has(pc) && [...ct].some(c => (pc - c + 12) % 12 === 1 || (c - pc + 12) % 12 === 1)) pcs.delete(pc);
       const pool = []; for (let m = 62; m <= 86; m++) if (pcs.has(m % 12)) pool.push(m);
       let anchor = 0, best = 99;
       pool.forEach((m, i) => { if (ct.has(m % 12) && Math.abs(m - 72) < best) { best = Math.abs(m - 72); anchor = i; } });
@@ -1722,7 +1868,14 @@ function makeSong() {
   const licks = planLicks(bars, variants, answer);
   trackNo++;
   logLicks(licks, bars, trackNo);
-  return { licks, rhythm, vstyle, counterMode, counter, answer, guide: 62, key, mode, progA, progB, kit, half, tapeStopEnd, modUp, snLag: Math.random() < 0.75 ? 0.010 + Math.random() * 0.015 : 0.004, bpmOff: Math.floor(Math.random() * 13) - 6, swing: Math.round((0.54 + Math.random() * 0.08) * 100) / 100, bars, variants, ch, harm, lead, arp: pick(ARPS), brk: pick(BROKEN), bassRiff: pick(BASS_SYNC), dk: makeKit(), title: makeTitle(), no: trackNo };
+  if (borrow) {
+    const at = bars.map((b, i) => b.borrowed ? i + 1 : 0).filter(Boolean), nm = ([r, q]) => DEG_N[r] + ' ' + q + ' (' + NOTE_N[(key.pc + r) % 12] + q + ')';
+    console.info(`[borrow] track ${trackNo}: ${borrow.part} slot ${borrow.ci + 1}: ${nm(borrow.from)} -> ${nm([borrow.root, borrow.q])}, bars ${at.join(', ') || 'none'}`);
+  }
+  const hs = sec.find(S => S.halo);
+  if (hs) console.info(`[halo] track ${trackNo}: around ${NOTE_N[(key.pc + hs.halo.node) % 12]} (the ${hs.halo.node === 7 ? '5th' : '3rd'}): ` + hs.halo.path.map(([r, q]) => NOTE_N[(key.pc + r) % 12] + q).join(' - ') + `, bars ${bars.findIndex(b => b.halo) + 1}-${bars.findIndex(b => b.halo) + 4}`);
+  if (shift) console.info(`[shift] track ${trackNo}: last chorus ${SHIFTS[shift].label} (${key.n} -> ${NOTE_N[pcMod(key.pc + shift)]}), bars ${bars.findIndex(b => b.mod) + 1}-${bars.length - 4}, home in the outro`);
+  return { shift, borrow, licks, rhythm, vstyle, counterMode, counter, answer, guide: 62, key, mode, progA, progB, kit, half, tapeStopEnd, modUp, snLag: Math.random() < 0.75 ? 0.010 + Math.random() * 0.015 : 0.004, bpmOff: Math.floor(Math.random() * 13) - 6, swing: Math.round((0.54 + Math.random() * 0.08) * 100) / 100, bars, variants, ch, harm, lead, arp: pick(ARPS), brk: pick(BROKEN), bassRiff: pick(BASS_SYNC), dk: makeKit(), title: makeTitle(), no: trackNo };
 }
 
 let song = null, barIdx = 0, nextBarT = 0, skipFlag = false;
@@ -1754,7 +1907,7 @@ const LEAD = {
   flute: { label: 'flute', fn: flute, g: 0.92, ring: 0, w: 0.16 },
   vibes: { label: 'vibraphone', fn: vibes, g: 1.35, ring: 0.3, w: 0.14 },
   piano: { label: 'felt piano', fn: feltPiano, g: 1.15, ring: 0.2, w: 0.14 },
-  guitar: { label: 'nylon guitar', fn: nylon, g: 4.5, ring: 0.3, w: 0.12 },
+  guitar: { label: 'nylon guitar', fn: nylon, g: 3.2, ring: 0.3, w: 0.12 },
   wurli: { label: 'wurlitzer', fn: wurli, g: 1.1, ring: 0.15, w: 0.1 },
   kalimba: { label: 'kalimba', fn: kalimba, g: 1.4, ring: 0.3, w: 0.1 },
   sine: { label: 'soft synth', fn: sineLead, g: 0.95, ring: 0, w: 0.06 }
@@ -1927,7 +2080,7 @@ function planLicks(bars, variants, answer) {
   if (!want) return out;
   // first free step after the melody; a long last note may keep ringing under the lick
   const free = bar => { const mel = barMelody(bar, variants, answer); return mel.length ? Math.max(...mel.map(e => e.s + Math.min(e.d, 3))) + 1 : 0; };
-  const usable = bar => bar && !bar.fill;
+  const usable = bar => bar && !bar.fill && !bar.halo;
   const idea = makeLickIdea(), occ = [];
   // a return that does not fit anywhere gets another variation (a couple of tries)
   for (let n = 0, tries = 0; n < want && tries < want + 3; tries++) {

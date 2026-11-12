@@ -1733,16 +1733,19 @@ function makeSong() {
   if (!progA) progA = pick(PROGS);
   let progB = genProg(M, 'S', progA) || genProg(M, null, progA) || progA;
   const tapeStopEnd = Math.random() < 0.17;
-  // last chorus: a whole-step lift (14%) or a mediant shift (12%, returning home in the outro)
-  let modUp = SHIFT_FORCE ? 0 : Math.random() < 0.14 ? 2 : 0, shift = 0;
-  if (!modUp && SHIFT_FORCE !== false && (SHIFT_FORCE || Math.random() < 0.12 / 0.86)) shift = planShift(progA, progB);
+  // last chorus: a whole-step lift (14%) or a mediant shift (12%, returning home in the outro).
+  // Budget: one big harmonic event per track - a key change OR a halo breakdown - plus at most one borrowed chord
+  let modUp = SHIFT_FORCE || HALO_FORCE ? 0 : Math.random() < 0.14 ? 2 : 0, shift = 0;
+  if (!modUp && !HALO_FORCE && SHIFT_FORCE !== false && (SHIFT_FORCE || Math.random() < 0.12 / 0.86)) shift = planShift(progA, progB);
+  const keyChange = !!(modUp || shift);
   const sec = [];
   sec.push({ n: 4, d: 0, b: 0, m: 0, p: progA, f: [700, CUT], hats: Math.random() < 0.45 });
   sec.push({ n: 8, d: 1, b: 1, m: 0, p: progA });
   sec.push({ n: 8, d: 1, b: 1, m: 1, p: progB });
   // breakdown: filtered (no drums), bare (keys only), beat (drums + bass only) or halo (chords around a held note)
   if (HALO_FORCE || Math.random() < 0.6) {
-    let bt = HALO_FORCE ? 'halo' : wpick(HALO_FORCE === false ? { filtered: 0.45, bare: 0.3, beat: 0.25 } : { filtered: 0.35, bare: 0.2, beat: 0.2, halo: 0.25 }), lowF = Math.min(2400, CUT);
+    const noHalo = HALO_FORCE === false || keyChange;
+    let bt = HALO_FORCE ? 'halo' : wpick(noHalo ? { filtered: 0.45, bare: 0.3, beat: 0.25 } : { filtered: 0.35, bare: 0.2, beat: 0.2, halo: 0.25 }), lowF = Math.min(2400, CUT);
     const halo = bt === 'halo' ? planHalo(mode, progA, progB) : null;
     if (bt === 'halo' && !halo) bt = 'bare';
     if (halo) sec.push({ n: 4, d: 0, b: 1, m: 0, p: halo.path, halo, f: [CUT * 0.85, CUT * 0.85], brk: bt });
@@ -1831,7 +1834,8 @@ function makeSong() {
   // bass: tonic pedal through the first verse, or first-inversion bass when it makes a stepwise line
   let pedalBn = keyRoot - 24; while (pedalBn < 36) pedalBn += 12; while (pedalBn > 47) pedalBn -= 12;
   bars.forEach((b, i) => {
-    if (b.pedal) { b.bn = pedalBn; if (b.passing) b.passing.forEach(p => p.bn = pedalBn); return; }
+    // a borrowed chord keeps its own bass: over the tonic pedal it could clash (bII over I)
+    if (b.pedal && !b.borrowed) { b.bn = pedalBn; if (b.passing) b.passing.forEach(p => p.bn = pedalBn); return; }
     const prev = bars[i - 1], next = bars[i + 1];
     if (b.q === 'sus' || !prev || Math.random() >= 0.15) return;
     let b3 = b.kr + b.root + QUAL[b.q][1] - 24; while (b3 < 36) b3 += 12; while (b3 > 48) b3 -= 12;
